@@ -1,0 +1,3 @@
+[submodule "sdkcore/internal/ffi/sdk-core"]
+	path = sdkcore/internal/ffi/sdk-core
+	url = https://github.com/temporalio/sdk-core.git

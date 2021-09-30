@@ -20,3 +20,5 @@ test.log
 .DS_Store
 .gobincache
 .fossa.yml
+/sdkcore/internal/ffi/sdk-core/target
+/sdkcore/internal/ffi/sdk-core-bridge/target
