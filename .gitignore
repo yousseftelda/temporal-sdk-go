@@ -22,3 +22,4 @@ test.log
 .fossa.yml
 /sdkcore/internal/ffi/sdk-core/target
 /sdkcore/internal/ffi/sdk-core-bridge/target
+libtemporal_sdk_core_bridge.a

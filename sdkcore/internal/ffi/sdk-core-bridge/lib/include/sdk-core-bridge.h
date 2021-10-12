@@ -13,6 +13,8 @@ typedef struct tmprl_core_t tmprl_core_t;
 
 typedef struct tmprl_error_t tmprl_error_t;
 
+typedef struct tmprl_log_listener_t tmprl_log_listener_t;
+
 typedef struct tmprl_runtime_t tmprl_runtime_t;
 
 typedef struct tmprl_wf_activation_completion_t tmprl_wf_activation_completion_t;
@@ -196,3 +198,21 @@ void tmprl_shutdown(struct tmprl_core_t *core);
 void tmprl_shutdown_worker(struct tmprl_core_t *core,
                            const char *task_queue,
                            size_t task_queue_len);
+
+void tmprl_log_listener_free(struct tmprl_log_listener_t *listener);
+
+struct tmprl_log_listener_t *tmprl_log_listener_new(struct tmprl_core_t *core);
+
+/**
+ * Blocks and returns true if one was captured or returns false if there will
+ * never be another log
+ */
+bool tmprl_log_listener_next(struct tmprl_core_t *core, struct tmprl_log_listener_t *listener);
+
+const char *tmprl_log_listener_curr_message(const struct tmprl_log_listener_t *listener);
+
+size_t tmprl_log_listener_curr_message_len(const struct tmprl_log_listener_t *listener);
+
+uint64_t tmprl_log_listener_curr_unix_nanos(const struct tmprl_log_listener_t *listener);
+
+size_t tmprl_log_listener_curr_level(const struct tmprl_log_listener_t *listener);

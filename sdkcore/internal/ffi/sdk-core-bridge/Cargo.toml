@@ -9,10 +9,11 @@ crate-type = ["staticlib"]
 
 [dependencies]
 libc = "0.2"
+log = "0.4"
 prost = "0.8"
 temporal-sdk-core = { version = "0.1.0-alpha.1", path = "../sdk-core" }
 temporal-sdk-core-protos = { version = "0.1.0", path = "../sdk-core/sdk-core-protos" }
-tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync"] }
 
 [build-dependencies]
 cbindgen = "0.20.0"

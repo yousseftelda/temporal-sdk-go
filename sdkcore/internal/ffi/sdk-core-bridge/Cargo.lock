@@ -1489,6 +1489,7 @@ version = "0.1.0"
 dependencies = [
  "cbindgen",
  "libc",
+ "log",
  "prost",
  "temporal-sdk-core",
  "temporal-sdk-core-protos",

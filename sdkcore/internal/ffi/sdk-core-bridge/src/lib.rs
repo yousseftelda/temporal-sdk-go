@@ -634,3 +634,109 @@ pub extern "C" fn tmprl_shutdown_worker(
             .shutdown_worker(utf8_string_ref(task_queue, task_queue_len)),
     )
 }
+
+pub struct tmprl_log_listener_t {
+    // Temporary space to hold the currently active log
+    curr: temporal_sdk_core::CoreLog,
+    recv: tokio::sync::mpsc::Receiver<temporal_sdk_core::CoreLog>,
+}
+
+#[no_mangle]
+pub extern "C" fn tmprl_log_listener_free(listener: *mut tmprl_log_listener_t) {
+    if !listener.is_null() {
+        unsafe {
+            Box::from_raw(listener);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tmprl_log_listener_new(core: *mut tmprl_core_t) -> *mut tmprl_log_listener_t {
+    let core = unsafe { &*core };
+    // Create a buffered sync channel
+    // TODO(cretz): Ask core to implement pushing logs instead of polling
+    // TODO(cretz): Have buffer size configurable?
+    let (send, recv) = tokio::sync::mpsc::channel(100);
+
+    // Asynchronously fetch logs repeatedly
+    core.tokio_runtime.spawn(async move {
+        // TODO(cretz): Using 3 ms from the node project, should be configurable?
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(3));
+        // Continuously ask for more logs
+        loop {
+            interval.tick().await;
+            for log in core.core.fetch_buffered_logs() {
+                // Try to send every log
+                match send.try_send(log) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        // TODO(cretz): What to do if receiver not fast enough?
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+
+    // Return the receiver
+    Box::into_raw(Box::new(tmprl_log_listener_t {
+        curr: temporal_sdk_core::CoreLog {
+            message: "".to_string(),
+            timestamp: std::time::UNIX_EPOCH,
+            level: log::Level::Trace,
+        },
+        recv: recv,
+    }))
+}
+
+/// Blocks and returns true if one was captured or returns false if there will
+/// never be another log
+#[no_mangle]
+pub extern "C" fn tmprl_log_listener_next(
+    core: *mut tmprl_core_t,
+    listener: *mut tmprl_log_listener_t,
+) -> bool {
+    let core = unsafe { &*core };
+    let listener = unsafe { &mut *listener };
+    // Wait for a log
+    match core.tokio_runtime.block_on(listener.recv.recv()) {
+        Some(log) => {
+            listener.curr = log;
+            true
+        }
+        None => false,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tmprl_log_listener_curr_message(
+    listener: *const tmprl_log_listener_t,
+) -> *const libc::c_char {
+    unsafe { (*listener).curr.message.as_ptr() as *const libc::c_char }
+}
+
+#[no_mangle]
+pub extern "C" fn tmprl_log_listener_curr_message_len(
+    listener: *const tmprl_log_listener_t,
+) -> libc::size_t {
+    unsafe { (*listener).curr.message.len() as libc::size_t }
+}
+
+#[no_mangle]
+pub extern "C" fn tmprl_log_listener_curr_unix_nanos(listener: *const tmprl_log_listener_t) -> u64 {
+    let time = unsafe { (*listener).curr.timestamp };
+    match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(dur) => dur.as_nanos() as u64,
+        // Should not happen, but give back 0 if it does
+        Err(_) => 0,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tmprl_log_listener_curr_level(
+    listener: *const tmprl_log_listener_t,
+) -> libc::size_t {
+    unsafe { (*listener).curr.level as libc::size_t }
+}
