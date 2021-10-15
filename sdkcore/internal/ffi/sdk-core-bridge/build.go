@@ -79,6 +79,27 @@ func buildLibrary(thisDir string, args []string) error {
 
 func genProtos(thisDir string) error {
 	localProtoDir := filepath.Join(thisDir, "../sdk-core/protos/local")
+	const useGogo = true
+	var commonArgs []string
+
+	// Get the gogo protobuf path and change go packages for well known types
+	binary := "go"
+	if useGogo {
+		binary = "gogoslick"
+		b, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/gogo/protobuf").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("failed getting module path for gogo protobuf: %w, output: %s", err, b)
+		}
+		commonArgs = append(
+			commonArgs,
+			"-I="+strings.TrimSpace(string(b)),
+			"--gogoslick_opt=Mgoogle/protobuf/any.proto=github.com/gogo/protobuf/types",
+			"--gogoslick_opt=Mgoogle/protobuf/duration.proto=github.com/gogo/protobuf/types",
+			"--gogoslick_opt=Mgoogle/protobuf/struct.proto=github.com/gogo/protobuf/types",
+			"--gogoslick_opt=Mgoogle/protobuf/timestamp.proto=github.com/gogo/protobuf/types",
+			"--gogoslick_opt=Mgoogle/protobuf/wrappers.proto=github.com/gogo/protobuf/types",
+		)
+	}
 
 	// Key is proto, value is dir/package
 	protos := map[string]string{
@@ -92,9 +113,9 @@ func genProtos(thisDir string) error {
 		"workflow_completion.proto": "corepb/workflowcompletionpb",
 	}
 	// Create go package args
-	goPackageArgs := make([]string, 0, len(protos))
 	for file, dir := range protos {
-		goPackageArgs = append(goPackageArgs, "--go_opt=M"+file+"="+"go.temporal.io/sdk/sdkcore/internal/ffi/"+dir)
+		// TODO(cretz): Does not change go_package name using gogo :-(
+		commonArgs = append(commonArgs, "--"+binary+"_opt=M"+file+"="+"go.temporal.io/sdk/sdkcore/internal/ffi/"+dir)
 	}
 
 	// Generate protos
@@ -108,10 +129,10 @@ func genProtos(thisDir string) error {
 		args := []string{
 			"-I=" + localProtoDir,
 			"-I=" + filepath.Join(thisDir, "../sdk-core/protos/api_upstream"),
-			"--go_opt=paths=source_relative",
-			"--go_out=" + outDir,
+			"--" + binary + "_opt=paths=source_relative",
+			"--" + binary + "_out=" + outDir,
 		}
-		args = append(args, goPackageArgs...)
+		args = append(args, commonArgs...)
 		args = append(args, filepath.Join(localProtoDir, file))
 		log.Printf("Running protoc %v", strings.Join(args, " "))
 		cmd := exec.Command("protoc", args...)

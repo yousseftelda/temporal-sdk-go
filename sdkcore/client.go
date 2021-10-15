@@ -2,28 +2,122 @@ package sdkcore
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"runtime"
 
+	"github.com/pborman/uuid"
 	enumspb "go.temporal.io/api/enums/v1"
 	workflowservicepb "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/sdkcore/internal/ffi"
 )
 
+// Global runtime
+var rt *ffi.Runtime
+
+func init() {
+	rt = ffi.NewRuntime()
+	runtime.SetFinalizer(rt, func(rt *ffi.Runtime) { rt.Close() })
+}
+
 type coreClient struct {
+	core    *ffi.Core
+	options *client.Options
 }
 
 func NewClient(options client.Options) (client.Client, error) {
-	// TODO
-	return &coreClient{}, nil
+	// TODO(cretz): More options
+	if options.HostPort == "" {
+		options.HostPort = client.DefaultHostPort
+	}
+	if options.Namespace == "" {
+		options.Namespace = client.DefaultNamespace
+	}
+	if options.Logger == nil {
+		options.Logger = logLevelAll
+	}
+	if options.DataConverter == nil {
+		options.DataConverter = converter.GetDefaultDataConverter()
+	}
+	workerBinaryID, err := binaryChecksum()
+	if err != nil {
+		return nil, fmt.Errorf("failed building checksum: %w", err)
+	}
+
+	core, err := ffi.NewCore(rt, ffi.CoreConfig{
+		// TODO(cretz): https?
+		TargetURL:      "http://" + options.HostPort,
+		Namespace:      options.Namespace,
+		ClientName:     "temporal-go-core",
+		ClientVersion:  "0.1.0",
+		WorkerBinaryID: workerBinaryID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initializing core: %w", err)
+	}
+	return &coreClient{core: core, options: &options}, nil
 }
 
-func (*coreClient) ExecuteWorkflow(
+func (c *coreClient) ExecuteWorkflow(
 	ctx context.Context,
 	options client.StartWorkflowOptions,
 	workflow interface{},
 	args ...interface{},
 ) (client.WorkflowRun, error) {
-	panic("TODO")
+	// Default options
+	// TODO(cretz): More options
+	if options.ID == "" {
+		options.ID = uuid.New()
+	}
+	if options.TaskQueue == "" {
+		return nil, fmt.Errorf("missing task queue option")
+	}
+
+	// Workflow type
+	// TODO(cretz): More function types
+	if reflect.TypeOf(workflow).Kind() != reflect.Func {
+		return nil, fmt.Errorf("only function types currently supported")
+	}
+	workflowType, isMethod := functionName(workflow)
+	if isMethod {
+		return nil, fmt.Errorf("methods not currently supported")
+	}
+
+	// Convert args
+	// TODO(cretz): Different converters
+	input, err := converter.GetDefaultDataConverter().ToPayloads(args...)
+	if err != nil {
+		return nil, fmt.Errorf("converting input: %w", err)
+	}
+
+	// Call
+	resp, err := c.core.StartWorkflow(&ffi.StartWorkflowRequest{
+		Input:        input,
+		TaskQueue:    options.TaskQueue,
+		WorkflowID:   options.ID,
+		WorkflowType: workflowType,
+		TaskTimeout:  options.WorkflowTaskTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("starting workflow: %w", err)
+	}
+	return &workflowRun{id: options.ID, runID: resp.RunId}, nil
+}
+
+type workflowRun struct {
+	id    string
+	runID string
+}
+
+func (w *workflowRun) GetID() string    { return w.id }
+func (w *workflowRun) GetRunID() string { return w.runID }
+
+func (w *workflowRun) Get(ctx context.Context, valuePtr interface{}) error {
+	// TODO(cretz): Implement this
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func (*coreClient) GetWorkflow(ctx context.Context, workflowID string, runID string) client.WorkflowRun {
@@ -193,6 +287,11 @@ func (*coreClient) ResetWorkflowExecution(
 	panic("TODO")
 }
 
-func (*coreClient) Close() {
-	panic("TODO")
+func (c *coreClient) Close() {
+	if c.core != nil {
+		c.core.Shutdown()
+		// TODO(cretz): This will segfault stuff! Fix reference counting...
+		c.core.Close()
+		c.core = nil
+	}
 }

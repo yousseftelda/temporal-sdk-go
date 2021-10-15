@@ -12,28 +12,44 @@ package ffi
 */
 import "C"
 import (
-	"context"
+	"fmt"
 	"time"
 	"unsafe"
 
+	"github.com/gogo/protobuf/proto"
+	"go.temporal.io/api/common/v1"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/sdkcore/internal/ffi/corepb"
-	"go.temporal.io/sdk/sdkcore/internal/ffi/corepb/activitytaskpb"
-	"go.temporal.io/sdk/sdkcore/internal/ffi/corepb/workflowactivationpb"
-	"go.temporal.io/sdk/sdkcore/internal/ffi/corepb/workflowcompletionpb"
-	"google.golang.org/protobuf/proto"
+	corepb "go.temporal.io/sdk/sdkcore/internal/ffi/corepb"
+	activitytaskpb "go.temporal.io/sdk/sdkcore/internal/ffi/corepb/activitytaskpb"
+	workflowactivationpb "go.temporal.io/sdk/sdkcore/internal/ffi/corepb/workflowactivationpb"
+	workflowcompletionpb "go.temporal.io/sdk/sdkcore/internal/ffi/corepb/workflowcompletionpb"
 )
 
 func HelloRust() {
 	C.hello_rust()
 }
 
-func copyString(ptr *C.char, size C.size_t) string {
+func copyString(ptr *C.uint8_t, size C.size_t) string {
 	in := (*[1<<30 - 1]byte)(unsafe.Pointer(ptr))
 	out := make([]byte, size)
 	copy(out, in[:size])
 	return string(out)
 }
+
+func bytesPtrAndLen(b []byte) (*C.uint8_t, C.size_t) {
+	return (*C.uint8_t)(C.CBytes(b)), C.size_t(len(b))
+}
+
+func bytesPtrFree(ptrs ...*C.uint8_t) {
+	for _, ptr := range ptrs {
+		C.free((unsafe.Pointer)(ptr))
+	}
+}
+
+func utf8PtrAndLen(s string) (*C.uint8_t, C.size_t) { return bytesPtrAndLen([]byte(s)) }
+
+func utf8PtrFree(ptrs ...*C.uint8_t) { bytesPtrFree(ptrs...) }
 
 type ErrFFI struct {
 	Message string
@@ -43,7 +59,7 @@ type ErrFFI struct {
 func (e *ErrFFI) Error() string { return e.Message }
 
 // This also frees the error
-func errFFIFromError(err *C.struct_tmprl_error_t) *ErrFFI {
+func errFFIFromError(err *C.struct_tmprl_error_t) error {
 	if err == nil {
 		return nil
 	}
@@ -54,27 +70,51 @@ func errFFIFromError(err *C.struct_tmprl_error_t) *ErrFFI {
 	}
 }
 
-type Core struct {
+type Runtime struct {
 	runtime *C.tmprl_runtime_t
-	core    *C.tmprl_core_t
 }
 
-func NewCore() (*Core, error) {
-	// Create runtime and core
-	runtime := C.tmprl_runtime_new()
-	targetURL := []byte(client.DefaultHostPort)
-	coreOpts := C.struct_tmprl_core_new_options_t{
-		// TODO(cretz): More options
-		target_url:     (*C.char)(unsafe.Pointer(&targetURL[0])),
-		target_url_len: C.size_t(len(targetURL)),
+func NewRuntime() *Runtime {
+	return &Runtime{runtime: C.tmprl_runtime_new()}
+}
+
+func (r *Runtime) Close() error {
+	if r.runtime != nil {
+		C.tmprl_runtime_free(r.runtime)
+		r.runtime = nil
 	}
-	coreOrErr := C.tmprl_core_new(runtime, &coreOpts)
+	return nil
+}
+
+type Core struct {
+	core *C.tmprl_core_t
+}
+
+type CoreConfig struct {
+	TargetURL      string
+	Namespace      string
+	ClientName     string
+	ClientVersion  string
+	WorkerBinaryID string
+}
+
+func NewCore(runtime *Runtime, config CoreConfig) (*Core, error) {
+	// Config defaults
+	if config.TargetURL == "" {
+		config.TargetURL = client.DefaultHostPort
+	}
+	var opts C.struct_tmprl_core_new_options_t
+	opts.target_url, opts.target_url_len = utf8PtrAndLen(config.TargetURL)
+	opts.namespace_, opts.namespace_len = utf8PtrAndLen(config.Namespace)
+	opts.client_name, opts.client_name_len = utf8PtrAndLen(config.ClientName)
+	opts.client_version, opts.client_version_len = utf8PtrAndLen(config.ClientVersion)
+	opts.worker_binary_id, opts.worker_binary_id_len = utf8PtrAndLen(config.WorkerBinaryID)
+	defer utf8PtrFree(opts.target_url, opts.namespace_, opts.client_name, opts.client_version, opts.worker_binary_id)
+	coreOrErr := C.tmprl_core_new(runtime.runtime, &opts)
 	if coreOrErr.error != nil {
-		// Free the runtime before returning error
-		C.tmprl_runtime_free(runtime)
 		return nil, errFFIFromError(coreOrErr.error)
 	}
-	return &Core{runtime: runtime, core: coreOrErr.core}, nil
+	return &Core{core: coreOrErr.core}, nil
 }
 
 // Caller must make absolutely sure no calls are made after this is closed.
@@ -82,10 +122,6 @@ func (c *Core) Close() error {
 	if c.core != nil {
 		C.tmprl_core_free(c.core)
 		c.core = nil
-	}
-	if c.runtime != nil {
-		C.tmprl_runtime_free(c.runtime)
-		c.runtime = nil
 	}
 	return nil
 }
@@ -95,10 +131,11 @@ type WorkerConfig struct {
 }
 
 func (c *Core) RegisterWorker(config *WorkerConfig) error {
-	taskQueueBytes := []byte(config.TaskQueue)
+	taskQueuePtr := C.CBytes([]byte(config.TaskQueue))
+	defer C.free(taskQueuePtr)
 	conf := C.struct_tmprl_worker_config_t{
-		task_queue:     (*C.char)(unsafe.Pointer(&taskQueueBytes[0])),
-		task_queue_len: C.size_t(len(taskQueueBytes)),
+		task_queue:     (*C.uint8_t)(taskQueuePtr),
+		task_queue_len: C.size_t(len(config.TaskQueue)),
 	}
 	return errFFIFromError(C.tmprl_register_worker(c.core, &conf))
 }
@@ -107,7 +144,7 @@ func (c *Core) PollWorkflowActivation(taskQueue string) (*workflowactivationpb.W
 	taskQueueBytes := []byte(taskQueue)
 	actOrErr := C.tmprl_poll_workflow_activation(
 		c.core,
-		(*C.char)(unsafe.Pointer(&taskQueueBytes[0])),
+		(*C.uint8_t)(unsafe.Pointer(&taskQueueBytes[0])),
 		C.size_t(len(taskQueueBytes)),
 	)
 	if err := errFFIFromError(actOrErr.error); err != nil {
@@ -126,7 +163,7 @@ func (c *Core) PollActivityTask(taskQueue string) (*activitytaskpb.ActivityTask,
 	taskQueueBytes := []byte(taskQueue)
 	taskOrErr := C.tmprl_poll_activity_task(
 		c.core,
-		(*C.char)(unsafe.Pointer(&taskQueueBytes[0])),
+		(*C.uint8_t)(unsafe.Pointer(&taskQueueBytes[0])),
 		C.size_t(len(taskQueueBytes)),
 	)
 	if err := errFFIFromError(taskOrErr.error); err != nil {
@@ -192,9 +229,9 @@ func (c *Core) RequestWorkflowEviction(taskQueue, runID string) {
 	runIDBytes := []byte(runID)
 	C.tmprl_request_workflow_eviction(
 		c.core,
-		(*C.char)(unsafe.Pointer(&taskQueueBytes[0])),
+		(*C.uint8_t)(unsafe.Pointer(&taskQueueBytes[0])),
 		C.size_t(len(taskQueueBytes)),
-		(*C.char)(unsafe.Pointer(&runIDBytes[0])),
+		(*C.uint8_t)(unsafe.Pointer(&runIDBytes[0])),
 		C.size_t(len(runIDBytes)),
 	)
 }
@@ -207,7 +244,7 @@ func (c *Core) ShutdownWorker(taskQueue string) {
 	taskQueueBytes := []byte(taskQueue)
 	C.tmprl_shutdown_worker(
 		c.core,
-		(*C.char)(unsafe.Pointer(&taskQueueBytes[0])),
+		(*C.uint8_t)(unsafe.Pointer(&taskQueueBytes[0])),
 		C.size_t(len(taskQueueBytes)),
 	)
 }
@@ -228,8 +265,61 @@ const (
 	LogLevelTrace
 )
 
-func (c *Core) RunLogListener(ctx context.Context, cb func(*Log) bool) {
-	panic("TODO")
+// This can drop messages if not receiving fast enough. Log parameter to
+// callback is not reused. This returns when Core is closed or the callback
+// returns false.
+func (c *Core) RunLogListener(cb func(*Log) bool) {
+	l := C.tmprl_log_listener_new(c.core)
+	defer C.tmprl_log_listener_free(l)
+	// TODO(cretz): When core is closed this may segfault!
+	ok := true
+	for ok && bool(C.tmprl_log_listener_next(c.core, l)) {
+		ok = cb(&Log{
+			Message: copyString(C.tmprl_log_listener_curr_message(l), C.tmprl_log_listener_curr_message_len(l)),
+			Time:    time.Unix(0, int64(C.tmprl_log_listener_curr_unix_nanos(l))),
+			Level:   LogLevel(C.tmprl_log_listener_curr_level(l)),
+		})
+	}
+}
+
+type StartWorkflowRequest struct {
+	Input        *common.Payloads
+	TaskQueue    string
+	WorkflowID   string
+	WorkflowType string
+	TaskTimeout  time.Duration
+}
+
+func (c *Core) StartWorkflow(req *StartWorkflowRequest) (*workflowservice.StartWorkflowExecutionResponse, error) {
+	// Create request
+	var coreReq C.struct_tmprl_start_workflow_request_t
+	coreReq.input_payloads_proto_len = 0
+	coreReq.task_queue, coreReq.task_queue_len = utf8PtrAndLen(req.TaskQueue)
+	coreReq.workflow_id, coreReq.workflow_id_len = utf8PtrAndLen(req.WorkflowID)
+	coreReq.workflow_type, coreReq.workflow_type_len = utf8PtrAndLen(req.WorkflowType)
+	defer utf8PtrFree(coreReq.task_queue, coreReq.workflow_id, coreReq.workflow_type)
+	// Marshal input
+	if req.Input != nil && len(req.Input.Payloads) > 0 {
+		b, err := proto.Marshal(req.Input)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling input: %w", err)
+		}
+		coreReq.input_payloads_proto, coreReq.input_payloads_proto_len = bytesPtrAndLen(b)
+		defer bytesPtrFree(coreReq.input_payloads_proto)
+	}
+
+	// Call
+	respOrErr := C.tmprl_start_workflow(c.core, &coreReq)
+	if err := errFFIFromError(respOrErr.error); err != nil {
+		return nil, err
+	}
+	defer C.tmprl_start_workflow_response_free(respOrErr.response)
+	var resp workflowservice.StartWorkflowExecutionResponse
+	err := c.protoFromBytesOrErr(C.tmprl_start_workflow_response_to_proto(c.core, respOrErr.response), &resp)
+	if err != nil {
+		return nil, err
+	}
+	return &resp, err
 }
 
 func (c *Core) protoFromBytesOrErr(bytesOrErr C.struct_tmprl_bytes_or_error_t, p proto.Message) error {

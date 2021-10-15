@@ -12,37 +12,58 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
+// Use to flip between core and not
+const useSDKCore = true
+
+func newClientAndWorker(
+	clientOpts client.Options,
+	workerOpts worker.Options,
+	taskQueue string,
+) (client.Client, worker.Worker, error) {
+	newClient, newWorker := client.NewClient, worker.New
+	if useSDKCore {
+		newClient, newWorker = sdkcore.NewClient, sdkcore.NewWorker
+	}
+	c, err := newClient(clientOpts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed creating client: %w", err)
+	}
+	return c, newWorker(c, taskQueue, workerOpts), nil
+}
+
 func Example() {
 	ctx, cancel := context.WithCancel(context.TODO())
 	defer cancel()
 
-	// Create client
-	c, err := sdkcore.NewClient(client.Options{Logger: logLevelWarn})
+	// Create client and worker
+	const taskQueue = "greeting-task-queue"
+	c, w, err := newClientAndWorker(client.Options{}, worker.Options{}, taskQueue)
 	if err != nil {
-		log.Fatalf("Failed creating client: %v", err)
+		log.Fatal(err)
 	}
 	defer c.Close()
+	log.Printf("Created client and worker")
 
-	// Start worker in background
-	const taskQueue = "greeting-task-queue"
-	w := sdkcore.NewWorker(c, taskQueue, worker.Options{})
+	// Register workflow/activity and start worker in background
 	w.RegisterWorkflow(GreetingWorkflow)
 	w.RegisterActivity(ComposeGreeting)
 	if err := w.Start(); err != nil {
 		log.Fatalf("Failed starting worker: %v", err)
 	}
 	defer w.Stop()
+	log.Printf("Started worker")
 
 	// Run workflow
 	wrk, err := c.ExecuteWorkflow(
 		ctx,
-		client.StartWorkflowOptions{ID: "greeting-workflow", TaskQueue: taskQueue},
+		client.StartWorkflowOptions{TaskQueue: taskQueue},
 		GreetingWorkflow,
 		"World",
 	)
 	if err != nil {
 		log.Fatalf("Failed starting workflow: %v", err)
 	}
+	log.Printf("Started workflow, %v - %v", wrk.GetID(), wrk.GetRunID())
 	var greeting string
 	if err = wrk.Get(ctx, &greeting); err != nil {
 		log.Fatalf("Failed getting workflow result: %v", err)
@@ -52,6 +73,7 @@ func Example() {
 }
 
 func GreetingWorkflow(ctx workflow.Context, name string) (string, error) {
+	workflow.GetLogger(ctx).Debug("Started greeting workflow")
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Second * 5})
 	var result string
 	err := workflow.ExecuteActivity(ctx, ComposeGreeting, name).Get(ctx, &result)
@@ -61,34 +83,4 @@ func GreetingWorkflow(ctx workflow.Context, name string) (string, error) {
 func ComposeGreeting(name string) (string, error) {
 	greeting := fmt.Sprintf("Hello, %s!", name)
 	return greeting, nil
-}
-
-type logLevel int
-
-const (
-	logLevelNone logLevel = iota
-	logLevelError
-	logLevelWarn
-	logLevelInfo
-	logLevelDebug
-	logLevelAll
-)
-
-func (l logLevel) log(level logLevel, levelStr string, msg string, keyVals ...interface{}) {
-	if l >= level {
-		log.Println(append([]interface{}{levelStr, msg}, keyVals...))
-	}
-}
-
-func (l logLevel) Debug(msg string, keyVals ...interface{}) {
-	l.log(logLevelDebug, "DEBUG", msg, keyVals...)
-}
-func (l logLevel) Info(msg string, keyVals ...interface{}) {
-	l.log(logLevelInfo, "INFO", msg, keyVals...)
-}
-func (l logLevel) Warn(msg string, keyVals ...interface{}) {
-	l.log(logLevelWarn, "WARN", msg, keyVals...)
-}
-func (l logLevel) Error(msg string, keyVals ...interface{}) {
-	l.log(logLevelError, "ERROR", msg, keyVals...)
 }

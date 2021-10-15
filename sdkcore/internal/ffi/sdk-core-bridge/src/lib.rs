@@ -9,6 +9,16 @@ pub extern "C" fn hello_rust() {
     println!("Hello, Rust!");
 }
 
+fn utf8_string_ref<'a>(data: *const u8, len: libc::size_t) -> &'a str {
+    if data.is_null() || len == 0 {
+        return "";
+    }
+    unsafe {
+        let bytes = std::slice::from_raw_parts(data, len);
+        std::str::from_utf8_unchecked(bytes)
+    }
+}
+
 pub struct tmprl_error_t {
     message: String,
     // TODO(cretz): Enums?
@@ -33,11 +43,11 @@ pub extern "C" fn tmprl_error_free(error: *mut tmprl_error_t) {
 /// Not null terminated (use tmprl_error_message_len()) and remains owned by
 /// error
 #[no_mangle]
-pub extern "C" fn tmprl_error_message(error: *const tmprl_error_t) -> *const libc::c_char {
+pub extern "C" fn tmprl_error_message(error: *const tmprl_error_t) -> *const u8 {
     if error.is_null() {
         return std::ptr::null_mut();
     }
-    unsafe { (*error).message.as_ptr() as *const libc::c_char }
+    unsafe { (*error).message.as_ptr() }
 }
 
 #[no_mangle]
@@ -135,20 +145,17 @@ pub struct tmprl_core_or_error_t {
 
 #[repr(C)]
 pub struct tmprl_core_new_options_t {
-    /// UTF-8, not null terminated, not owned
-    target_url: *const libc::c_char,
+    target_url: *const u8,
     target_url_len: libc::size_t,
+    namespace: *const u8,
+    namespace_len: libc::size_t,
+    client_name: *const u8,
+    client_name_len: libc::size_t,
+    client_version: *const u8,
+    client_version_len: libc::size_t,
+    worker_binary_id: *const u8,
+    worker_binary_id_len: libc::size_t,
     // TODO(cretz): Other stuff
-}
-
-fn utf8_string_ref<'a>(data: *const libc::c_char, len: libc::size_t) -> &'a str {
-    if data.is_null() || len == 0 {
-        return "";
-    }
-    unsafe {
-        let bytes = std::slice::from_raw_parts(data as *const u8, len);
-        std::str::from_utf8_unchecked(bytes)
-    }
 }
 
 #[no_mangle]
@@ -190,7 +197,14 @@ fn core_new(
             ))
             .map_err(|err| tmprl_error_t::new(format!("invalid URL: {}", err), 0))?,
         )
-        .namespace("mynamespace".to_string())
+        .namespace(utf8_string_ref(options.namespace, options.namespace_len).to_string())
+        .client_name(utf8_string_ref(options.client_name, options.client_name_len).to_string())
+        .client_version(
+            utf8_string_ref(options.client_version, options.client_version_len).to_string(),
+        )
+        .worker_binary_id(
+            utf8_string_ref(options.worker_binary_id, options.worker_binary_id_len).to_string(),
+        )
         .build()
         .map_err(|err| tmprl_error_t::new(format!("invalid gateway options: {}", err), 0))?;
     let telemetry_opts = temporal_sdk_core::TelemetryOptionsBuilder::default()
@@ -265,7 +279,7 @@ pub extern "C" fn tmprl_bytes_free(core: *mut tmprl_core_t, bytes: *const tmprl_
 #[repr(C)]
 pub struct tmprl_worker_config_t {
     /// UTF-8, not null terminated, not owned
-    task_queue: *const libc::c_char,
+    task_queue: *const u8,
     task_queue_len: libc::size_t,
     // TODO(cretz): Other stuff
 }
@@ -336,7 +350,7 @@ pub struct tmprl_wf_activation_or_error_t {
 #[no_mangle]
 pub extern "C" fn tmprl_poll_workflow_activation(
     core: *mut tmprl_core_t,
-    task_queue: *const libc::c_char,
+    task_queue: *const u8,
     task_queue_len: libc::size_t,
 ) -> tmprl_wf_activation_or_error_t {
     match poll_workflow_activation(core, task_queue, task_queue_len) {
@@ -353,7 +367,7 @@ pub extern "C" fn tmprl_poll_workflow_activation(
 
 fn poll_workflow_activation(
     core: *mut tmprl_core_t,
-    task_queue: *const libc::c_char,
+    task_queue: *const u8,
     task_queue_len: libc::size_t,
 ) -> Result<tmprl_wf_activation_t, tmprl_error_t> {
     let core = unsafe { &*core };
@@ -403,7 +417,7 @@ pub struct tmprl_activity_task_or_error_t {
 #[no_mangle]
 pub extern "C" fn tmprl_poll_activity_task(
     core: *mut tmprl_core_t,
-    task_queue: *const libc::c_char,
+    task_queue: *const u8,
     task_queue_len: libc::size_t,
 ) -> tmprl_activity_task_or_error_t {
     match poll_activity_task(core, task_queue, task_queue_len) {
@@ -420,7 +434,7 @@ pub extern "C" fn tmprl_poll_activity_task(
 
 fn poll_activity_task(
     core: *mut tmprl_core_t,
-    task_queue: *const libc::c_char,
+    task_queue: *const u8,
     task_queue_len: libc::size_t,
 ) -> Result<tmprl_activity_task_t, tmprl_error_t> {
     let core = unsafe { &*core };
@@ -603,9 +617,9 @@ pub extern "C" fn tmprl_record_activity_heartbeat(
 #[no_mangle]
 pub extern "C" fn tmprl_request_workflow_eviction(
     core: *mut tmprl_core_t,
-    task_queue: *const libc::c_char,
+    task_queue: *const u8,
     task_queue_len: libc::size_t,
-    run_id: *const libc::c_char,
+    run_id: *const u8,
     run_id_len: libc::size_t,
 ) {
     let core = unsafe { &*core };
@@ -625,7 +639,7 @@ pub extern "C" fn tmprl_shutdown(core: *mut tmprl_core_t) {
 #[no_mangle]
 pub extern "C" fn tmprl_shutdown_worker(
     core: *mut tmprl_core_t,
-    task_queue: *const libc::c_char,
+    task_queue: *const u8,
     task_queue_len: libc::size_t,
 ) {
     let core = unsafe { &*core };
@@ -713,8 +727,8 @@ pub extern "C" fn tmprl_log_listener_next(
 #[no_mangle]
 pub extern "C" fn tmprl_log_listener_curr_message(
     listener: *const tmprl_log_listener_t,
-) -> *const libc::c_char {
-    unsafe { (*listener).curr.message.as_ptr() as *const libc::c_char }
+) -> *const u8 {
+    unsafe { (*listener).curr.message.as_ptr() }
 }
 
 #[no_mangle]
@@ -739,4 +753,108 @@ pub extern "C" fn tmprl_log_listener_curr_level(
     listener: *const tmprl_log_listener_t,
 ) -> libc::size_t {
     unsafe { (*listener).curr.level as libc::size_t }
+}
+
+#[repr(C)]
+pub struct tmprl_start_workflow_request_t {
+    input_payloads_proto: *const u8,
+    input_payloads_proto_len: libc::size_t,
+    task_queue: *const u8,
+    task_queue_len: libc::size_t,
+    workflow_id: *const u8,
+    workflow_id_len: libc::size_t,
+    workflow_type: *const u8,
+    workflow_type_len: libc::size_t,
+    task_timeout_nanos: u64,
+}
+
+pub struct tmprl_start_workflow_response_t {
+    response: temporal_sdk_core_protos::temporal::api::workflowservice::v1::StartWorkflowExecutionResponse,
+}
+
+#[no_mangle]
+pub extern "C" fn tmprl_start_workflow_response_free(
+    response: *mut tmprl_start_workflow_response_t,
+) {
+    if !response.is_null() {
+        unsafe {
+            Box::from_raw(response);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tmprl_start_workflow_response_to_proto(
+    core: *mut tmprl_core_t,
+    response: *const tmprl_start_workflow_response_t,
+) -> tmprl_bytes_or_error_t {
+    let core = unsafe { &mut *core };
+    let response = unsafe { &*response };
+    core.encode_proto(&response.response)
+}
+
+/// One and only one field is non-null, caller must free error if it's error or
+/// pass completion to tmprl_record_activity_heartbeat
+#[repr(C)]
+pub struct tmprl_start_workflow_response_or_error_t {
+    response: *mut tmprl_start_workflow_response_t,
+    error: *mut tmprl_error_t,
+}
+
+#[no_mangle]
+pub extern "C" fn tmprl_start_workflow(
+    core: *mut tmprl_core_t,
+    req: *const tmprl_start_workflow_request_t,
+) -> tmprl_start_workflow_response_or_error_t {
+    match start_workflow(core, req) {
+        Ok(v) => tmprl_start_workflow_response_or_error_t {
+            response: Box::into_raw(Box::new(v)),
+            error: std::ptr::null_mut(),
+        },
+        Err(err) => tmprl_start_workflow_response_or_error_t {
+            response: std::ptr::null_mut(),
+            error: Box::into_raw(Box::new(err)),
+        },
+    }
+}
+
+fn start_workflow(
+    core: *mut tmprl_core_t,
+    req: *const tmprl_start_workflow_request_t,
+) -> Result<tmprl_start_workflow_response_t, tmprl_error_t> {
+    let core = unsafe { &*core };
+    let req = unsafe { &*req };
+    // Convert input payloads
+    let input = if req.input_payloads_proto_len == 0 {
+        Vec::new()
+    } else {
+        // Decode into API wrapper proto before converting to common proto
+        let bytes = unsafe {
+            std::slice::from_raw_parts(req.input_payloads_proto, req.input_payloads_proto_len)
+        };
+        temporal_sdk_core_protos::temporal::api::common::v1::Payloads::decode(bytes)
+            .map_err(|err| tmprl_error_t::new(format!("failed decoding input: {}", err), 0))?
+            .payloads
+            .into_iter()
+            .map(|p| temporal_sdk_core_protos::coresdk::common::Payload {
+                metadata: p.metadata,
+                data: p.data,
+            })
+            .collect()
+    };
+    // Block on start call and convert success/failure
+    core.tokio_runtime
+        .block_on(core.core.server_gateway().start_workflow(
+            input,
+            String::from(utf8_string_ref(req.task_queue, req.task_queue_len)),
+            String::from(utf8_string_ref(req.workflow_id, req.workflow_id_len)),
+            String::from(utf8_string_ref(req.workflow_type, req.workflow_type_len)),
+            if req.task_timeout_nanos == 0 {
+                None
+            } else {
+                Some(std::time::Duration::from_nanos(req.task_timeout_nanos))
+            },
+        ))
+        .map(|v| tmprl_start_workflow_response_t { response: v })
+        .map_err(|err| tmprl_error_t::new(format!("start workflow failed: {}", err), 0))
 }
