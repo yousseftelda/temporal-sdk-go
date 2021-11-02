@@ -121,6 +121,8 @@ func dial(params dialParameters) (*grpc.ClientConn, error) {
 		}
 		opts = append(opts, grpc.WithKeepaliveParams(kap))
 	}
+
+	opts = append(opts, params.UserConnectionOptions.AdditionalDialOptions...)
 	return grpc.Dial(params.HostPort, opts...)
 }
 

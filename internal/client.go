@@ -492,6 +492,10 @@ type (
 
 		// MaxPayloadSize is a number of bytes that gRPC would allow to travel to and from server. Defaults to 64 MB.
 		MaxPayloadSize int
+
+		// AdditionalDialOptions are gRPC DialOptions that are applied after all of the DialOptions for the other option
+		// values.
+		AdditionalDialOptions []grpc.DialOption
 	}
 
 	// StartWorkflowOptions configuration parameters for starting a workflow execution.
